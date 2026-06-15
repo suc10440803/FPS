@@ -306,6 +306,8 @@ let noticeUntil = 0;
 let gameMode = "start";
 let scoped = false;
 let scopeAmount = 0;
+let sprintUntil = 0;
+const lastMoveTap = { KeyW: -Infinity, KeyS: -Infinity };
 const zombies = [];
 const colliders = [];
 const bullets = [];
@@ -538,6 +540,34 @@ function box(size, position, material, cast = true) {
 function addCollider(mesh) {
   mesh.updateMatrixWorld();
   colliders.push(new THREE.Box3().setFromObject(mesh));
+}
+
+function actorBoxAt(position, radius, height = 1.8) {
+  return new THREE.Box3(
+    new THREE.Vector3(position.x - radius, 0, position.z - radius),
+    new THREE.Vector3(position.x + radius, height, position.z + radius),
+  );
+}
+
+function intersectsWorld(position, radius, height = 1.8) {
+  const box = actorBoxAt(position, radius, height);
+  return colliders.some((collider) => box.intersectsBox(collider));
+}
+
+function segmentBlocked(from, to) {
+  const delta = to.clone().sub(from);
+  const distance = delta.length();
+  if (distance <= 0.001) return false;
+  const ray = new THREE.Ray(from, delta.normalize());
+  const hitPoint = new THREE.Vector3();
+  return colliders.some((collider) => {
+    const hit = ray.intersectBox(collider, hitPoint);
+    return Boolean(hit) && hit.distanceTo(from) < distance - 0.08;
+  });
+}
+
+function hasLineOfSight(from, to) {
+  return !segmentBlocked(from, to);
 }
 
 function buildMap() {
@@ -855,7 +885,7 @@ const zombieTypes = {
   runner: {
     label: "Runner",
     healthScale: 0.65,
-    speedScale: 3.44,
+    speedScale: 2.92,
     bodyScale: [0.76, 1.08, 0.78],
     skin: "runnerSkin",
     cloth: "tornCloth",
@@ -1027,6 +1057,16 @@ function switchWeapon(index) {
   updateWeaponHud();
 }
 
+function cycleWeapon(direction) {
+  for (let step = 1; step <= weapons.length; step += 1) {
+    const next = (currentWeapon + direction * step + weapons.length) % weapons.length;
+    if (weapons[next].owned) {
+      switchWeapon(next);
+      return;
+    }
+  }
+}
+
 function reload() {
   const weapon = weapons[currentWeapon];
   if (!Number.isFinite(weapon.mag) || weapon.mag === weapon.magSize || weapon.reserve <= 0) return;
@@ -1048,6 +1088,7 @@ function finishReloadIfNeeded() {
   reloadingUntil = 0;
   reloadStartedAt = 0;
   reloadGlowUntil = clock.elapsedTime + 0.42;
+  updateHud();
 }
 
 function reloadProgress() {
@@ -1136,6 +1177,21 @@ function shoot() {
   raycaster.set(origin, direction);
   raycaster.far = weapon.range;
 
+  let bulletEnd = origin.clone().add(direction.clone().multiplyScalar(Math.min(weapon.range, 38)));
+  let wallDistance = Infinity;
+  const wallHitPoint = new THREE.Vector3();
+  const wallRay = new THREE.Ray(origin, direction.clone());
+  colliders.forEach((collider) => {
+    const hitPoint = wallRay.intersectBox(collider, new THREE.Vector3());
+    if (!hitPoint) return;
+    const distance = hitPoint.distanceTo(origin);
+    if (distance < wallDistance && distance <= weapon.range) {
+      wallDistance = distance;
+      wallHitPoint.copy(hitPoint);
+    }
+  });
+  if (Number.isFinite(wallDistance)) bulletEnd = wallHitPoint.clone();
+
   const targets = [];
   zombies.forEach((zombie) => {
     if (zombie.userData.dead) return;
@@ -1144,18 +1200,20 @@ function shoot() {
   const hits = raycaster.intersectObjects(targets, false);
   if (hits.length) {
     const hit = hits[0];
-    const zombie = zombies.find(
-      (z) => z.userData.head === hit.object || z.userData.body === hit.object,
-    );
-    if (zombie) {
+    if (hit.distance < wallDistance - 0.05) {
+      const zombie = zombies.find(
+        (z) => z.userData.head === hit.object || z.userData.body === hit.object,
+      );
+      if (zombie) {
       const isHead = hit.object === zombie.userData.head;
       damageZombie(zombie, weapon.damage * (isHead ? weapon.headshot : 1), isHead);
+      }
     }
   }
 
   bullets.push({
     from: origin.clone(),
-    to: origin.clone().add(direction.multiplyScalar(Math.min(weapon.range, 38))),
+    to: bulletEnd,
     life: 0.06,
   });
   updateHud();
@@ -1284,7 +1342,7 @@ function throwGrenade() {
 
 function explodeAt(position) {
   const radius = 6.4;
-  const maxDamage = 190;
+  const maxDamage = 266;
   zombies.forEach((zombie) => {
     if (zombie.userData.dead) return;
     const distance = zombie.position.distanceTo(position);
@@ -1351,6 +1409,7 @@ function takeDamage(amount, options = {}) {
   ui.damage.classList.add("show");
   playUiSound("hurt");
   setTimeout(() => ui.damage.classList.remove("show"), 130);
+  updateHud();
   if (player.health <= 0) endGame();
 }
 
@@ -1401,6 +1460,9 @@ function resetGame() {
     weapon.owned = index <= 1;
   });
   player.grenades = 0;
+  sprintUntil = 0;
+  lastMoveTap.KeyW = -Infinity;
+  lastMoveTap.KeyS = -Infinity;
   wave = 1;
   currentWeapon = 1;
   gameMode = "playing";
@@ -1413,20 +1475,23 @@ function resetGame() {
 
 function resolveCollisions(next) {
   const radius = player.crouch ? 0.34 : 0.42;
-  const playerBox = new THREE.Box3(
-    new THREE.Vector3(next.x - radius, 0, next.z - radius),
-    new THREE.Vector3(next.x + radius, 1.8, next.z + radius),
-  );
-  for (const collider of colliders) {
-    if (playerBox.intersectsBox(collider)) return player.position.clone();
-  }
-  next.x = THREE.MathUtils.clamp(next.x, -34, 34);
-  next.z = THREE.MathUtils.clamp(next.z, -34, 34);
-  return next;
+  const resolved = player.position.clone();
+  resolved.y = next.y;
+  const xStep = resolved.clone();
+  xStep.x = THREE.MathUtils.clamp(next.x, -34, 34);
+  if (!intersectsWorld(xStep, radius, player.crouch ? 1.25 : 1.8)) resolved.x = xStep.x;
+  else player.velocity.x = 0;
+
+  const zStep = resolved.clone();
+  zStep.z = THREE.MathUtils.clamp(next.z, -34, 34);
+  if (!intersectsWorld(zStep, radius, player.crouch ? 1.25 : 1.8)) resolved.z = zStep.z;
+  else player.velocity.z = 0;
+  return resolved;
 }
 
 function updatePlayer(dt) {
-  const speed = keys.has("ShiftLeft") ? 8.8 : keys.has("KeyC") ? 3.0 : 5.2;
+  const doubleTapSprint = clock.elapsedTime < sprintUntil && (keys.has("KeyW") || keys.has("KeyS"));
+  const speed = keys.has("ShiftLeft") || doubleTapSprint ? 8.8 : keys.has("KeyC") ? 3.0 : 5.2;
   player.crouch = keys.has("KeyC");
   const eye = player.crouch ? 1.18 : 1.72;
   const wish = new THREE.Vector3();
@@ -1456,6 +1521,29 @@ function updatePlayer(dt) {
   camera.rotation.x = player.pitch;
 }
 
+function resolveZombiePosition(zombie, move, dt) {
+  const data = zombie.userData;
+  const radius = data.isBoss ? 0.9 : data.type === "Brute" ? 0.62 : data.type === "Runner" ? 0.38 : 0.48;
+  const speed = data.speed * dt;
+  const resolved = zombie.position.clone();
+  const xStep = resolved.clone();
+  xStep.x = THREE.MathUtils.clamp(resolved.x + move.x * speed, -33, 33);
+  if (!intersectsWorld(xStep, radius, data.isBoss ? 3.2 : 2.1)) resolved.x = xStep.x;
+  else {
+    data.wander.x *= -1;
+    if (data.dashTime > 0) data.dashTime = 0;
+  }
+
+  const zStep = resolved.clone();
+  zStep.z = THREE.MathUtils.clamp(resolved.z + move.z * speed, -33, 33);
+  if (!intersectsWorld(zStep, radius, data.isBoss ? 3.2 : 2.1)) resolved.z = zStep.z;
+  else {
+    data.wander.z *= -1;
+    if (data.dashTime > 0) data.dashTime = 0;
+  }
+  return resolved;
+}
+
 function updateZombies(dt) {
   const alive = zombies.filter((z) => !z.userData.dead);
   alive.forEach((zombie) => {
@@ -1463,15 +1551,20 @@ function updateZombies(dt) {
     const toPlayer = player.position.clone().sub(zombie.position);
     toPlayer.y = 0;
     const distance = toPlayer.length();
+    const visiblePlayer = hasLineOfSight(
+      zombie.position.clone().add(new THREE.Vector3(0, data.isBoss ? 2.25 : 1.45, 0)),
+      player.position.clone().add(new THREE.Vector3(0, -0.2, 0)),
+    );
+    const toPlayerDir = distance > 0.001 ? toPlayer.clone().normalize() : new THREE.Vector3();
 
-    if (distance < 2) data.state = "Attack";
-    else if (distance < 24) data.state = "Chase";
-    else if (distance < 34) data.state = "Detect";
+    if (visiblePlayer && distance < 2) data.state = "Attack";
+    else if (visiblePlayer && distance < 24) data.state = "Chase";
+    else if (visiblePlayer && distance < 34) data.state = "Detect";
     else data.state = "Patrol";
 
     let move = data.wander.clone();
-    if (data.state === "Detect") move = toPlayer.normalize().multiplyScalar(0.45);
-    if (data.state === "Chase") move = toPlayer.normalize();
+    if (data.state === "Detect") move = toPlayerDir.clone().multiplyScalar(0.45);
+    if (data.state === "Chase") move = toPlayerDir.clone();
     if (data.state === "Attack") {
       move.set(0, 0, 0);
       data.attackCooldown -= dt;
@@ -1489,18 +1582,18 @@ function updateZombies(dt) {
       data.shotCooldown -= dt;
       data.dashCooldown -= dt;
       data.dashTime = Math.max(0, data.dashTime - dt);
-      if (distance > 5 && distance < 28 && data.shotCooldown <= 0) {
+      if (visiblePlayer && distance > 5 && distance < 28 && data.shotCooldown <= 0) {
         data.shotCooldown = 1.7;
         fireBossProjectile(zombie);
       }
-      if (distance > 7 && distance < 22 && data.dashCooldown <= 0 && Math.random() < dt * 0.9) {
+      if (visiblePlayer && distance > 7 && distance < 22 && data.dashCooldown <= 0 && Math.random() < dt * 0.9) {
         data.dashCooldown = 5.2 + Math.random() * 2.4;
         data.dashTime = 0.52;
         data.dashHit = false;
         showNotice("Boss 突進");
       }
       if (data.dashTime > 0) {
-        move = toPlayer.normalize().multiplyScalar(4.6);
+        move = toPlayerDir.clone().multiplyScalar(4.6);
         if (!data.dashHit && distance < 2.7) {
           data.dashHit = true;
           takeDamage(data.damage * 2.2, { armorPierce: 0.35 });
@@ -1508,9 +1601,7 @@ function updateZombies(dt) {
       }
     }
 
-    const next = zombie.position.clone().addScaledVector(move, data.speed * dt);
-    zombie.position.x = THREE.MathUtils.clamp(next.x, -33, 33);
-    zombie.position.z = THREE.MathUtils.clamp(next.z, -33, 33);
+    zombie.position.copy(resolveZombiePosition(zombie, move, dt));
     if (move.lengthSq() > 0.001) zombie.rotation.y = Math.atan2(-move.x, -move.z);
     const parts = data.parts;
     if (parts) {
@@ -1543,6 +1634,10 @@ function updateBossProjectiles(dt) {
     projectile.life -= dt;
     const previous = projectile.position.clone();
     projectile.position.addScaledVector(projectile.velocity, dt);
+    if (segmentBlocked(previous, projectile.position)) {
+      projectile.life = 0;
+      return;
+    }
     if (projectile.mesh) {
       projectile.mesh.position.copy(projectile.position);
       projectile.mesh.scale.setScalar(1 + Math.sin(clock.elapsedTime * 24) * 0.08);
@@ -1573,7 +1668,14 @@ function updateGrenades(dt) {
   grenades.forEach((grenade) => {
     grenade.fuse -= dt;
     grenade.velocity.y -= 9.8 * dt;
+    const previous = grenade.position.clone();
     grenade.position.addScaledVector(grenade.velocity, dt);
+    if (segmentBlocked(previous, grenade.position)) {
+      grenade.position.copy(previous);
+      grenade.velocity.x *= -0.42;
+      grenade.velocity.z *= -0.42;
+      grenade.velocity.y *= 0.72;
+    }
     if (grenade.position.y < 0.15) {
       grenade.position.y = 0.15;
       grenade.velocity.y *= -0.22;
@@ -1812,6 +1914,11 @@ function bindEvents() {
       toggleShop();
       return;
     }
+    if (!event.repeat && gameMode === "playing" && (event.code === "KeyW" || event.code === "KeyS")) {
+      const now = clock.elapsedTime;
+      if (now - lastMoveTap[event.code] < 0.32) sprintUntil = now + 1.2;
+      lastMoveTap[event.code] = now;
+    }
     keys.add(event.code);
     if (gameMode !== "playing") return;
     if (event.code === "Digit1") switchWeapon(0);
@@ -1823,6 +1930,15 @@ function bindEvents() {
     if (event.code === "KeyG") throwGrenade();
   });
   document.addEventListener("keyup", (event) => keys.delete(event.code));
+  document.addEventListener(
+    "wheel",
+    (event) => {
+      if (gameMode !== "playing" || player.dead) return;
+      event.preventDefault();
+      cycleWeapon(event.deltaY > 0 ? 1 : -1);
+    },
+    { passive: false },
+  );
   ui.shop.addEventListener("click", (event) => {
     const button = event.target.closest("button[data-buy]");
     if (button) buy(button.dataset.buy);
