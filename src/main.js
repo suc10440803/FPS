@@ -204,7 +204,7 @@ const weapons = [
     key: "1",
     name: "Knife",
     role: "Melee",
-    damage: 60,
+    damage: 90,
     headshot: 1,
     fireRate: 0.42,
     spread: 0,
@@ -228,13 +228,13 @@ const weapons = [
     spread: 0.014,
     recoil: 0.011,
     magSize: 12,
-    reserveMax: 96,
+    reserveMax: Infinity,
     reload: 1.25,
     range: 55,
     automatic: false,
     owned: true,
     mag: 12,
-    reserve: 72,
+    reserve: Infinity,
   },
   {
     key: "3",
@@ -877,7 +877,7 @@ const zombieTypes = {
   walker: {
     label: "Walker",
     healthScale: 1,
-    speedScale: 1,
+    speedScale: 1.4,
     bodyScale: [1, 1, 1],
     skin: "zombie",
     cloth: "tornCloth",
@@ -885,7 +885,7 @@ const zombieTypes = {
   runner: {
     label: "Runner",
     healthScale: 0.65,
-    speedScale: 2.92,
+    speedScale: 3.21,
     bodyScale: [0.76, 1.08, 0.78],
     skin: "runnerSkin",
     cloth: "tornCloth",
@@ -1223,10 +1223,10 @@ function damageZombie(zombie, amount, headshot) {
   zombie.userData.health -= amount;
   zombie.userData.state = "Chase";
   playHitSound(headshot);
-  ui.hitmarker.classList.remove("show");
+  ui.hitmarker.classList.remove("show", "headshot");
   void ui.hitmarker.offsetWidth;
+  ui.hitmarker.classList.toggle("headshot", Boolean(headshot));
   ui.hitmarker.classList.add("show");
-  if (headshot) showNotice("爆頭", 0.45);
   if (zombie.userData.health <= 0) killZombie(zombie);
 }
 
@@ -1449,7 +1449,7 @@ function resetGame() {
   weapons[0].mag = Infinity;
   weapons[0].reserve = Infinity;
   weapons[1].mag = 12;
-  weapons[1].reserve = 72;
+  weapons[1].reserve = Infinity;
   weapons[2].mag = 30;
   weapons[2].reserve = 120;
   weapons[3].mag = 5;
