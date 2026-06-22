@@ -1121,7 +1121,7 @@ const zombieTypes = {
   boss: {
     label: "Boss",
     healthScale: 22.5,
-    speedScale: 0.78,
+    speedScale: 1.926,
     bodyScale: [2.05, 1.8, 1.85],
     skin: "bossSkin",
     cloth: "bossCloth",
@@ -1196,8 +1196,8 @@ function spongeBossMesh() {
     }
   });
 
-  const body = makeBossHitbox(new THREE.CapsuleGeometry(0.86, 1.9, 6, 14), [0, 1.55, 0], group);
-  const head = makeBossHitbox(new THREE.SphereGeometry(0.72, 16, 12), [0, 2.95, -0.05], group);
+  const body = makeBossHitbox(new THREE.BoxGeometry(2.05, 3.15, 1.25), [0, 1.6, 0], group);
+  const head = makeBossHitbox(new THREE.BoxGeometry(1.72, 0.72, 1.1), [0, 2.86, -0.02], group);
   const mixer = new THREE.AnimationMixer(root);
   group.userData.parts = null;
   group.userData.head = head;
