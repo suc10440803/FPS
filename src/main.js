@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
-import { SkeletonUtils } from "three/examples/jsm/utils/SkeletonUtils.js";
+import { clone as cloneSkeleton } from "three/examples/jsm/utils/SkeletonUtils.js";
 import "./style.css";
 
 const hitmarkerSoundUrl = new URL("../hitmarker_2.mp3", import.meta.url).href;
@@ -1173,7 +1173,7 @@ function playBossAction(zombie, namePart, { loop = false, fade = 0.08, timeScale
 function spongeBossMesh() {
   const group = new THREE.Group();
   const visual = new THREE.Group();
-  const root = SkeletonUtils.clone(bossAsset.scene);
+  const root = cloneSkeleton(bossAsset.scene);
   root.updateMatrixWorld(true);
   const bounds = new THREE.Box3().setFromObject(root);
   const center = bounds.getCenter(new THREE.Vector3());
