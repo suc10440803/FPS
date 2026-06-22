@@ -492,6 +492,29 @@ canvas {
   color: #f7f1dc;
 }
 
+.map-picker {
+  display: grid;
+  gap: 7px;
+  margin: 0 0 14px;
+  color: #f1cf6a;
+  font-weight: 900;
+}
+
+.map-picker select {
+  min-height: 44px;
+  border: 1px solid rgb(255 255 255 / 18%);
+  border-radius: 7px;
+  padding: 0 12px;
+  background: rgb(255 255 255 / 9%);
+  color: #f7f1dc;
+  font: inherit;
+}
+
+.map-picker option {
+  background: #121515;
+  color: #f7f1dc;
+}
+
 button {
   width: 100%;
   min-height: 46px;

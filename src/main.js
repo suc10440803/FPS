@@ -8,6 +8,8 @@ const ak47ModelUrl = new URL("./assets/models/ak47.glb", import.meta.url).href;
 const awpModelUrl = new URL("./assets/models/awp.glb", import.meta.url).href;
 const roboSpongebobModelUrl = new URL("./assets/models/robo_spongebob.glb", import.meta.url).href;
 const zombieModelUrl = new URL("./assets/models/zombie.glb", import.meta.url).href;
+const cityMapModelUrl = new URL("./assets/models/chicken_gun_fruzer_-_city.glb", import.meta.url).href;
+const squidMapModelUrl = new URL("./assets/models/cookie_map_squid_game.glb", import.meta.url).href;
 const app = document.querySelector("#app");
 
 app.innerHTML = `
@@ -39,7 +41,7 @@ app.innerHTML = `
     <div class="notice" id="notice"></div>
     <form class="dev-console" id="devConsole">
       <label for="consoleInput">Console</label>
-      <input id="consoleInput" autocomplete="off" spellcheck="false" placeholder="kill / money" />
+      <input id="consoleInput" autocomplete="off" spellcheck="false" placeholder="kill / money / flush / fly" />
       <small id="consoleOutput">按 Enter 執行，按波浪鍵關閉。</small>
     </form>
     <div class="crosshair"></div>
@@ -124,6 +126,14 @@ app.innerHTML = `
           <div class="control">Shift 衝刺 / Space 跳躍</div>
           <div class="control">1-5 切換武器 / G 手榴彈 / B 商店</div>
         </div>
+        <label class="map-picker" for="mapSelect">
+          <span>選擇地圖</span>
+          <select id="mapSelect">
+            <option value="factory">廢棄工廠</option>
+            <option value="city">Fruzer City</option>
+            <option value="squid">魷魚遊戲</option>
+          </select>
+        </label>
         <button id="startButton">開始作戰</button>
       </div>
     </div>
@@ -165,6 +175,7 @@ const ui = {
   bossName: document.querySelector("#bossName"),
   bossHealthFill: document.querySelector("#bossHealthFill"),
   startScreen: document.querySelector("#startScreen"),
+  mapSelect: document.querySelector("#mapSelect"),
   startButton: document.querySelector("#startButton"),
   gameOver: document.querySelector("#gameOver"),
   restartButton: document.querySelector("#restartButton"),
@@ -181,6 +192,8 @@ app.prepend(renderer.domElement);
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x0b0d0d);
 scene.fog = new THREE.FogExp2(0x0b0d0d, 0.028);
+const mapGroup = new THREE.Group();
+scene.add(mapGroup);
 
 const camera = new THREE.PerspectiveCamera(
   75,
@@ -211,6 +224,7 @@ const player = {
   crouch: false,
   active: false,
   dead: false,
+  fly: false,
 };
 
 const weapons = [
@@ -361,6 +375,37 @@ const zombieAsset = {
   scene: null,
   animations: [],
 };
+const cityMapAsset = {
+  loaded: false,
+  failed: false,
+  scene: null,
+};
+const squidMapAsset = {
+  loaded: false,
+  failed: false,
+  scene: null,
+};
+const cityMapTuning = {
+  targetSize: 72,
+  scaleMultiplier: 4,
+  position: new THREE.Vector3(0, 0.05, 0),
+  rotationY: 0,
+  playerSpawn: new THREE.Vector3(0, 1.72, 4),
+  showHelperFloor: false,
+};
+const squidMapTuning = {
+  targetSize: 64,
+  scaleMultiplier: 1,
+  position: new THREE.Vector3(0, -1.5, 0),
+  rotationY: 0,
+  playerSpawn: new THREE.Vector3(0, 1.72, 4),
+  boundaryLimit: 29,
+  showHelperFloor: false,
+};
+let selectedMapId = "factory";
+let currentMapId = null;
+let playerSpawn = new THREE.Vector3(0, 1.72, 11);
+let zombieSpawnPoints = [];
 let initialWaveSpawned = false;
 const bossAttackAnimations = ["attack_verti", "attack_horiz_L", "attack_horiz_L"];
 const baseShopPrices = {
@@ -579,7 +624,7 @@ function box(size, position, material, cast = true) {
   mesh.position.set(...position);
   mesh.castShadow = cast;
   mesh.receiveShadow = true;
-  scene.add(mesh);
+  mapGroup.add(mesh);
   return mesh;
 }
 
@@ -616,7 +661,23 @@ function hasLineOfSight(from, to) {
   return !segmentBlocked(from, to);
 }
 
-function buildMap() {
+function clearMap() {
+  colliders.length = 0;
+  mapGroup.clear();
+}
+
+function buildFactoryMap() {
+  clearMap();
+  currentMapId = "factory";
+  playerSpawn = new THREE.Vector3(0, 1.72, 11);
+  zombieSpawnPoints = [
+    new THREE.Vector3(-28, 0, -28),
+    new THREE.Vector3(0, 0, -30),
+    new THREE.Vector3(28, 0, -26),
+    new THREE.Vector3(-30, 0, 20),
+    new THREE.Vector3(30, 0, 22),
+    new THREE.Vector3(0, 0, 30),
+  ];
   box([72, 1, 72], [0, -0.5, 0], materials.floor, false);
 
   [
@@ -655,11 +716,189 @@ function buildMap() {
     vat.position.set(18 + (i % 2) * 4, 2.25, -24 + Math.floor(i / 2) * 4);
     vat.castShadow = true;
     vat.receiveShadow = true;
-    scene.add(vat);
+    mapGroup.add(vat);
   }
 
   const sign = box([8, 0.2, 2.2], [0, 4.1, -35.2], materials.hazard, false);
   sign.rotation.x = Math.PI * 0.5;
+}
+
+function addBoundaryColliders(limit = 36) {
+  [
+    [[limit * 2, 6, 1.2], [0, 2.5, -limit]],
+    [[limit * 2, 6, 1.2], [0, 2.5, limit]],
+    [[1.2, 6, limit * 2], [-limit, 2.5, 0]],
+    [[1.2, 6, limit * 2], [limit, 2.5, 0]],
+  ].forEach(([size, pos]) => {
+    const collider = new THREE.Mesh(new THREE.BoxGeometry(...size), materials.wall);
+    collider.position.set(...pos);
+    collider.visible = false;
+    mapGroup.add(collider);
+    addCollider(collider);
+  });
+}
+
+function buildCityColliders(city) {
+  const before = colliders.length;
+  city.updateMatrixWorld(true);
+  city.traverse((child) => {
+    if (!child.isMesh && !child.isSkinnedMesh) return;
+    if (!isCitySolidMesh(child)) return;
+    const bounds = new THREE.Box3().setFromObject(child);
+    const size = bounds.getSize(new THREE.Vector3());
+    if (size.y < 1.25) return;
+    if (size.x > 68 && size.z > 68) return;
+    if (bounds.max.y < 1.1) return;
+    colliders.push(bounds.clone());
+  });
+  console.info(`City colliders: ${colliders.length - before}`);
+}
+
+function isCityPlayableMesh(child) {
+  const name = child.name || "";
+  if (/^Object_/i.test(name)) return false;
+  return /road|bg|house|bank|church|construction|cityhall|office|building/i.test(name);
+}
+
+function isCitySolidMesh(child) {
+  const name = child.name || "";
+  if (!isCityPlayableMesh(child)) return false;
+  if (/road|ground|floor/i.test(name)) return false;
+  return true;
+}
+
+function cityPlayableBounds(city) {
+  const bounds = new THREE.Box3();
+  city.updateMatrixWorld(true);
+  city.traverse((child) => {
+    if (!child.isMesh && !child.isSkinnedMesh) return;
+    if (!isCityPlayableMesh(child)) return;
+    bounds.union(new THREE.Box3().setFromObject(child));
+  });
+  return bounds.isEmpty() ? new THREE.Box3().setFromObject(city) : bounds;
+}
+
+function squidPlayableBounds(squid) {
+  const bounds = new THREE.Box3();
+  squid.updateMatrixWorld(true);
+  squid.traverse((child) => {
+    if (!child.isMesh && !child.isSkinnedMesh) return;
+    bounds.union(new THREE.Box3().setFromObject(child));
+  });
+  return bounds.isEmpty() ? new THREE.Box3().setFromObject(squid) : bounds;
+}
+
+function buildSquidColliders(squid) {
+  const before = colliders.length;
+  squid.updateMatrixWorld(true);
+  squid.traverse((child) => {
+    if (!child.isMesh && !child.isSkinnedMesh) return;
+    const bounds = new THREE.Box3().setFromObject(child);
+    const size = bounds.getSize(new THREE.Vector3());
+    if (size.y < 1.0) return;
+    if (size.x > 42 && size.z > 42) return;
+    colliders.push(bounds.clone());
+  });
+  console.info(`Squid map colliders: ${colliders.length - before}`);
+}
+
+function buildCityMap() {
+  clearMap();
+  currentMapId = "city";
+  playerSpawn = cityMapTuning.playerSpawn.clone();
+  zombieSpawnPoints = [
+    new THREE.Vector3(-26, 0, -24),
+    new THREE.Vector3(-12, 0, -28),
+    new THREE.Vector3(12, 0, -28),
+    new THREE.Vector3(26, 0, -18),
+    new THREE.Vector3(-28, 0, 10),
+    new THREE.Vector3(28, 0, 12),
+    new THREE.Vector3(-16, 0, 28),
+    new THREE.Vector3(16, 0, 28),
+  ];
+  if (cityMapTuning.showHelperFloor) box([76, 0.6, 76], [0, -0.32, 0], materials.floor, false);
+  addBoundaryColliders(38);
+  if (!cityMapAsset.loaded) {
+    currentMapId = "city-loading";
+    showNotice(cityMapAsset.failed ? "城市地圖載入失敗" : "城市地圖載入中", 2);
+    return;
+  }
+  const city = cloneSkeleton(cityMapAsset.scene);
+  city.updateMatrixWorld(true);
+  const bounds = cityPlayableBounds(city);
+  const center = bounds.getCenter(new THREE.Vector3());
+  const size = bounds.getSize(new THREE.Vector3());
+  const longestSide = Math.max(size.x, size.z);
+  const cityScale = longestSide > 0 ? (cityMapTuning.targetSize / longestSide) * cityMapTuning.scaleMultiplier : 1;
+  city.scale.setScalar(cityScale);
+  city.rotation.y = cityMapTuning.rotationY;
+  city.position.set(
+    -center.x * cityScale + cityMapTuning.position.x,
+    -bounds.min.y * cityScale + cityMapTuning.position.y,
+    -center.z * cityScale + cityMapTuning.position.z,
+  );
+  city.traverse((child) => {
+    if (child.isMesh || child.isSkinnedMesh) {
+      child.castShadow = true;
+      child.receiveShadow = true;
+      if (child.material) child.material.needsUpdate = true;
+    }
+  });
+  mapGroup.add(city);
+  buildCityColliders(city);
+  showNotice("Fruzer City 已載入");
+}
+
+function buildSquidMap() {
+  clearMap();
+  currentMapId = "squid";
+  playerSpawn = squidMapTuning.playerSpawn.clone();
+  zombieSpawnPoints = [
+    new THREE.Vector3(-24, 0, -22),
+    new THREE.Vector3(0, 0, -26),
+    new THREE.Vector3(24, 0, -22),
+    new THREE.Vector3(-26, 0, 8),
+    new THREE.Vector3(26, 0, 8),
+    new THREE.Vector3(-18, 0, 25),
+    new THREE.Vector3(18, 0, 25),
+  ];
+  if (squidMapTuning.showHelperFloor) box([70, 0.6, 70], [0, -0.32, 0], materials.floor, false);
+  addBoundaryColliders(squidMapTuning.boundaryLimit);
+  if (!squidMapAsset.loaded) {
+    currentMapId = "squid-loading";
+    showNotice(squidMapAsset.failed ? "魷魚遊戲地圖載入失敗" : "魷魚遊戲地圖載入中", 2);
+    return;
+  }
+  const squid = cloneSkeleton(squidMapAsset.scene);
+  squid.updateMatrixWorld(true);
+  const bounds = squidPlayableBounds(squid);
+  const center = bounds.getCenter(new THREE.Vector3());
+  const size = bounds.getSize(new THREE.Vector3());
+  const longestSide = Math.max(size.x, size.z);
+  const squidScale = longestSide > 0 ? (squidMapTuning.targetSize / longestSide) * squidMapTuning.scaleMultiplier : 1;
+  squid.scale.setScalar(squidScale);
+  squid.rotation.y = squidMapTuning.rotationY;
+  squid.position.set(
+    -center.x * squidScale + squidMapTuning.position.x,
+    -bounds.min.y * squidScale + squidMapTuning.position.y,
+    -center.z * squidScale + squidMapTuning.position.z,
+  );
+  squid.traverse((child) => {
+    if (child.isMesh || child.isSkinnedMesh) {
+      child.castShadow = true;
+      child.receiveShadow = true;
+      if (child.material) child.material.needsUpdate = true;
+    }
+  });
+  mapGroup.add(squid);
+  buildSquidColliders(squid);
+  showNotice("魷魚遊戲地圖已載入");
+}
+
+function buildMap(mapId = selectedMapId) {
+  if (mapId === "squid") buildSquidMap();
+  else if (mapId === "city") buildCityMap();
+  else buildFactoryMap();
 }
 
 function weaponBox(size, position, material, parent) {
@@ -1119,6 +1358,44 @@ function loadZombieModel() {
   );
 }
 
+function loadCityMapModel() {
+  gltfLoader.load(
+    cityMapModelUrl,
+    (gltf) => {
+      cityMapAsset.loaded = true;
+      cityMapAsset.failed = false;
+      cityMapAsset.scene = gltf.scene;
+      showNotice("Fruzer City 地圖載入完成", 1.4);
+      if (selectedMapId === "city" && gameMode === "start") buildMap("city");
+    },
+    undefined,
+    () => {
+      cityMapAsset.loaded = false;
+      cityMapAsset.failed = true;
+      showNotice("Fruzer City 地圖載入失敗", 2);
+    },
+  );
+}
+
+function loadSquidMapModel() {
+  gltfLoader.load(
+    squidMapModelUrl,
+    (gltf) => {
+      squidMapAsset.loaded = true;
+      squidMapAsset.failed = false;
+      squidMapAsset.scene = gltf.scene;
+      showNotice("魷魚遊戲地圖載入完成", 1.4);
+      if (selectedMapId === "squid" && gameMode === "start") buildMap("squid");
+    },
+    undefined,
+    () => {
+      squidMapAsset.loaded = false;
+      squidMapAsset.failed = true;
+      showNotice("魷魚遊戲地圖載入失敗", 2);
+    },
+  );
+}
+
 function spawnInitialWaveOnce() {
   if (initialWaveSpawned) return;
   initialWaveSpawned = true;
@@ -1372,12 +1649,53 @@ function zombieMesh(typeKey = "walker") {
   return group;
 }
 
-function spawnZombie(typeKey = "walker") {
+function randomRingSpawn() {
   const angle = Math.random() * Math.PI * 2;
   const radius = 22 + Math.random() * 10;
+  return new THREE.Vector3(Math.cos(angle) * radius, 0, Math.sin(angle) * radius);
+}
+
+function spawnRadiusForType(typeKey) {
+  if (typeKey === "boss") return 1.05;
+  if (typeKey === "brute") return 0.72;
+  if (typeKey === "runner") return 0.44;
+  return 0.52;
+}
+
+function findZombieSpawnPosition(typeKey = "walker") {
+  const radius = spawnRadiusForType(typeKey);
+  const basePoints = zombieSpawnPoints.length ? zombieSpawnPoints : [];
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const base = basePoints.length
+      ? basePoints[Math.floor(Math.random() * basePoints.length)].clone()
+      : randomRingSpawn();
+    const jitter = currentMapId === "city" ? 4.5 : 3.2;
+    base.x += (Math.random() - 0.5) * jitter;
+    base.z += (Math.random() - 0.5) * jitter;
+    if (base.distanceTo(player.position) < 10) continue;
+    if (!intersectsWorld(base, radius, typeKey === "boss" ? 3.2 : 2.1)) return base;
+  }
+  return randomRingSpawn();
+}
+
+function flushZombies() {
+  zombies.filter((zombie) => !zombie.userData.dead).forEach((zombie) => {
+    const typeKey = zombie.userData.isBoss
+      ? "boss"
+      : zombie.userData.type === "Runner"
+        ? "runner"
+        : zombie.userData.type === "Brute"
+          ? "brute"
+          : "walker";
+    zombie.position.copy(findZombieSpawnPosition(typeKey));
+    zombie.userData.wander.set(Math.random() - 0.5, 0, Math.random() - 0.5).normalize();
+  });
+}
+
+function spawnZombie(typeKey = "walker") {
   const type = zombieTypes[typeKey] || zombieTypes.walker;
   const group = zombieMesh(typeKey);
-  group.position.set(Math.cos(angle) * radius, 0, Math.sin(angle) * radius);
+  group.position.copy(findZombieSpawnPosition(typeKey));
   const baseHealth = 70 * 1.07 ** (wave - 1);
   const baseSpeed = 1.8 + Math.min(wave * 0.08, 0.65) + Math.random() * 0.25;
   group.userData = {
@@ -1864,6 +2182,8 @@ function endGame() {
 }
 
 function resetGame() {
+  selectedMapId = ui.mapSelect?.value || selectedMapId;
+  buildMap(selectedMapId);
   clearTimeout(ak47Asset.restoreTimer);
   if (ak47Asset.loaded) playAkAction("idle", { loop: true, fade: 0 });
   clearTimeout(awpAsset.restoreTimer);
@@ -1876,7 +2196,7 @@ function resetGame() {
     projectile.trail?.forEach((trail) => scene.remove(trail));
   });
   Object.assign(player, {
-    position: new THREE.Vector3(0, 1.72, 11),
+    position: playerSpawn.clone(),
     velocity: new THREE.Vector3(),
     yaw: 0,
     pitch: 0,
@@ -1891,6 +2211,7 @@ function resetGame() {
     crouch: false,
     active: true,
     dead: false,
+    fly: false,
   });
   weapons[0].mag = Infinity;
   weapons[0].reserve = Infinity;
@@ -1939,7 +2260,7 @@ function resolveCollisions(next) {
 
 function updatePlayer(dt) {
   const doubleTapSprint = clock.elapsedTime < sprintUntil && (keys.has("KeyW") || keys.has("KeyS"));
-  const speed = keys.has("ShiftLeft") || doubleTapSprint ? 8.8 : keys.has("KeyC") ? 3.0 : 5.2;
+  const speed = player.fly ? (keys.has("ShiftLeft") ? 18 : 10) : keys.has("ShiftLeft") || doubleTapSprint ? 8.8 : keys.has("KeyC") ? 3.0 : 5.2;
   player.crouch = keys.has("KeyC");
   const eye = player.crouch ? 1.18 : 1.72;
   const wish = new THREE.Vector3();
@@ -1947,6 +2268,18 @@ function updatePlayer(dt) {
   if (keys.has("KeyS")) wish.z += 1;
   if (keys.has("KeyA")) wish.x -= 1;
   if (keys.has("KeyD")) wish.x += 1;
+  if (player.fly) {
+    wish.normalize().applyEuler(camera.rotation);
+    if (keys.has("Space")) wish.y += 1;
+    if (keys.has("KeyC")) wish.y -= 1;
+    if (wish.lengthSq() > 1) wish.normalize();
+    player.velocity.lerp(wish.multiplyScalar(speed), 1 - Math.exp(-12 * dt));
+    player.position.addScaledVector(player.velocity, dt);
+    camera.position.copy(player.position);
+    camera.rotation.y = player.yaw;
+    camera.rotation.x = player.pitch;
+    return;
+  }
   wish.normalize().applyAxisAngle(new THREE.Vector3(0, 1, 0), player.yaw);
 
   player.velocity.x = THREE.MathUtils.damp(player.velocity.x, wish.x * speed, 12, dt);
@@ -2318,6 +2651,16 @@ function toggleDevConsole() {
   else openDevConsole();
 }
 
+function selectedMapLoadingMessage(mapId) {
+  if (mapId === "city" && !cityMapAsset.loaded) {
+    return cityMapAsset.failed ? "Fruzer City 地圖載入失敗，請先選其他地圖" : "Fruzer City 地圖載入中，請稍候";
+  }
+  if (mapId === "squid" && !squidMapAsset.loaded) {
+    return squidMapAsset.failed ? "魷魚遊戲地圖載入失敗，請先選其他地圖" : "魷魚遊戲地圖載入中，請稍候";
+  }
+  return "";
+}
+
 function executeConsoleCommand(command) {
   const normalized = command.trim().toLowerCase();
   if (!normalized) return;
@@ -2333,6 +2676,21 @@ function executeConsoleCommand(command) {
     ui.consoleOutput.textContent = "金幣 +10000。";
     showNotice("Console: money +10000");
     updateHud();
+    return;
+  }
+  if (normalized === "flush") {
+    flushZombies();
+    ui.consoleOutput.textContent = "所有存活殭屍已重新部署。";
+    showNotice("Console: flush");
+    return;
+  }
+  if (normalized === "fly") {
+    player.fly = !player.fly;
+    player.velocity.set(0, 0, 0);
+    player.grounded = false;
+    player.crouch = false;
+    ui.consoleOutput.textContent = player.fly ? "飛行穿牆：開啟。" : "飛行穿牆：關閉。";
+    showNotice(player.fly ? "Console: fly on" : "Console: fly off");
     return;
   }
   ui.consoleOutput.textContent = `未知指令：${command}`;
@@ -2374,10 +2732,24 @@ function animate() {
 function bindEvents() {
   ui.startButton.addEventListener("click", () => {
     ensureAudio();
-    gameMode = "playing";
-    player.active = true;
+    selectedMapId = ui.mapSelect?.value || selectedMapId;
+    const mapMessage = selectedMapLoadingMessage(selectedMapId);
+    if (mapMessage) {
+      showNotice(mapMessage, 2);
+      return;
+    }
+    resetGame();
     requestGamePointerLock();
     ui.startScreen.style.display = "none";
+  });
+  ui.mapSelect.addEventListener("change", () => {
+    selectedMapId = ui.mapSelect.value;
+    const mapMessage = selectedMapLoadingMessage(selectedMapId);
+    if (mapMessage) {
+      showNotice(mapMessage, 2);
+      return;
+    }
+    if (gameMode === "start") buildMap(selectedMapId);
   });
   ui.restartButton.addEventListener("click", () => {
     ensureAudio();
@@ -2484,5 +2856,7 @@ loadAk47Model();
 loadAwpModel();
 loadBossModel();
 loadZombieModel();
+loadCityMapModel();
+loadSquidMapModel();
 updateHud();
 animate();
