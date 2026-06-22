@@ -766,7 +766,7 @@ function createAkModel() {
   weaponCylinder(0.012, 0.22, [0.63, -0.22, -0.68], materials.metal, group, 10);
 
   addWeaponHands(group, [0.12, -0.62, -0.9], [0.5, -0.45, -0.36]);
-  slot.flash = makeMuzzle([0.56, -0.41, -2.02], slot);
+  slot.flash = makeMuzzle([0.42, -0.58, -2.25], slot);
   return slot;
 }
 
@@ -900,20 +900,31 @@ weaponModel.models.forEach((model, index) => {
 });
 
 function configureAk47Glb(root) {
-  root.name = "AK47_GLB";
-  root.position.set(0.44, -0.42, -1.12);
-  root.rotation.set(0, -Math.PI * 0.5, 0);
-  root.scale.setScalar(0.22);
+  const akVisual = new THREE.Group();
+  akVisual.name = "AK47_GLB";
+  akVisual.position.set(0.42, -0.58, -1.15);
+  akVisual.rotation.set(0, 0, 0);
+  akVisual.add(root);
+  root.updateMatrixWorld(true);
+  const bounds = new THREE.Box3().setFromObject(root);
+  const center = bounds.getCenter(new THREE.Vector3());
+  const size = bounds.getSize(new THREE.Vector3());
+  root.position.sub(center);
+  const longestSide = Math.max(size.x, size.y, size.z);
+  const targetLength = 2.15;
+  const normalizedScale = longestSide > 0 ? targetLength / longestSide : 1;
+  akVisual.scale.setScalar(normalizedScale);
   root.traverse((child) => {
     if (child.isMesh || child.isSkinnedMesh) {
-      child.castShadow = true;
-      child.receiveShadow = true;
+      child.castShadow = false;
+      child.receiveShadow = false;
       if (child.material) {
         child.material.side = THREE.FrontSide;
         child.material.needsUpdate = true;
       }
     }
   });
+  return akVisual;
 }
 
 function findAkAction(namePart) {
@@ -945,13 +956,13 @@ function loadAk47Model() {
     ak47ModelUrl,
     (gltf) => {
       const root = gltf.scene;
-      configureAk47Glb(root);
-      akSlot.add(root);
+      const visual = configureAk47Glb(root);
+      akSlot.add(visual);
       akSlot.fallback.visible = false;
       akSlot.userData.usesExternalAnimation = true;
       ak47Asset.loaded = true;
-      ak47Asset.glbRoot = root;
-      ak47Asset.mixer = new THREE.AnimationMixer(root);
+      ak47Asset.glbRoot = visual;
+      ak47Asset.mixer = new THREE.AnimationMixer(visual);
       ak47Asset.actions = Object.fromEntries(gltf.animations.map((clip) => [clip.name, ak47Asset.mixer.clipAction(clip)]));
       playAkAction("idle", { loop: true, fade: 0 });
       showNotice("AK-47 模型載入完成", 1.4);
@@ -2056,7 +2067,7 @@ function bindEvents() {
   });
   document.addEventListener("contextmenu", (event) => event.preventDefault());
   document.addEventListener("keydown", (event) => {
-    if (event.code === "Backquote") {
+    if (event.code === "Backquote" || event.key === "`" || event.key === "~") {
       event.preventDefault();
       toggleDevConsole();
       return;
