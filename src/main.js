@@ -1,10 +1,12 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { SkeletonUtils } from "three/examples/jsm/utils/SkeletonUtils.js";
 import "./style.css";
 
 const hitmarkerSoundUrl = new URL("../hitmarker_2.mp3", import.meta.url).href;
 const ak47ModelUrl = new URL("./assets/models/ak47.glb", import.meta.url).href;
 const awpModelUrl = new URL("./assets/models/awp.glb", import.meta.url).href;
+const roboSpongebobModelUrl = new URL("./assets/models/robo_spongebob.glb", import.meta.url).href;
 const app = document.querySelector("#app");
 
 app.innerHTML = `
@@ -108,7 +110,7 @@ app.innerHTML = `
           </div>
           <div>
             <h2>Boss 機制</h2>
-            <p>每 5 波出現白色紅眼 Boss。牠會發射可見能量彈、破甲重創玩家，也會機率性突進造成近戰傷害。</p>
+            <p>每 5 波出現海綿寶寶 Boss。牠不再遠程發射火球，但會靠近後用前方範圍揮擊壓制玩家。</p>
           </div>
           <div>
             <h2>商城系統</h2>
@@ -348,6 +350,12 @@ const awpAsset = {
   glbRoot: null,
   restoreTimer: null,
 };
+const bossAsset = {
+  loaded: false,
+  scene: null,
+  animations: [],
+};
+const bossAttackAnimations = ["attack_verti", "attack_horiz_L", "attack_horiz_L"];
 const baseShopPrices = {
   medkit: 75,
   armor: 90,
@@ -1068,6 +1076,23 @@ function loadAwpModel() {
   );
 }
 
+function loadBossModel() {
+  gltfLoader.load(
+    roboSpongebobModelUrl,
+    (gltf) => {
+      bossAsset.loaded = true;
+      bossAsset.scene = gltf.scene;
+      bossAsset.animations = gltf.animations;
+      showNotice("海綿寶寶 Boss 模型載入完成", 1.4);
+    },
+    undefined,
+    () => {
+      bossAsset.loaded = false;
+      showNotice("海綿寶寶 Boss 模型載入失敗，使用原本 Boss", 2);
+    },
+  );
+}
+
 const zombieTypes = {
   walker: {
     label: "Walker",
@@ -1095,7 +1120,7 @@ const zombieTypes = {
   },
   boss: {
     label: "Boss",
-    healthScale: 15,
+    healthScale: 22.5,
     speedScale: 0.78,
     bodyScale: [2.05, 1.8, 1.85],
     skin: "bossSkin",
@@ -1112,7 +1137,79 @@ function zombiePart(geometry, material, position, parent) {
   return mesh;
 }
 
+function makeBossHitbox(geometry, position, parent) {
+  const material = new THREE.MeshBasicMaterial({
+    color: 0xffffff,
+    transparent: true,
+    opacity: 0,
+    depthWrite: false,
+  });
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.position.set(...position);
+  mesh.castShadow = false;
+  mesh.receiveShadow = false;
+  parent.add(mesh);
+  return mesh;
+}
+
+function playBossAction(zombie, namePart, { loop = false, fade = 0.08, timeScale = 1 } = {}) {
+  const data = zombie.userData;
+  if (!data.bossActions) return;
+  const action = Object.entries(data.bossActions).find(([name]) => name.toLowerCase().includes(namePart.toLowerCase()))?.[1];
+  if (!action) return;
+  if (loop && data.bossActiveActionName === namePart && data.bossActiveAction === action) return;
+  if (data.bossActiveAction && data.bossActiveAction !== action) data.bossActiveAction.fadeOut(fade);
+  action.reset();
+  action.enabled = true;
+  action.timeScale = timeScale;
+  action.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, loop ? Infinity : 1);
+  action.clampWhenFinished = !loop;
+  action.fadeIn(fade).play();
+  data.bossActiveAction = action;
+  data.bossActiveActionName = namePart;
+  data.bossActionLockedUntil = loop ? 0 : clock.elapsedTime + action.getClip().duration / timeScale;
+}
+
+function spongeBossMesh() {
+  const group = new THREE.Group();
+  const visual = new THREE.Group();
+  const root = SkeletonUtils.clone(bossAsset.scene);
+  root.updateMatrixWorld(true);
+  const bounds = new THREE.Box3().setFromObject(root);
+  const center = bounds.getCenter(new THREE.Vector3());
+  const size = bounds.getSize(new THREE.Vector3());
+  root.position.set(-center.x, -bounds.min.y, -center.z);
+  const normalizedScale = size.y > 0 ? 3.25 / size.y : 1;
+  visual.scale.setScalar(normalizedScale);
+  visual.add(root);
+  group.add(visual);
+
+  root.traverse((child) => {
+    if (child.isMesh || child.isSkinnedMesh) {
+      child.castShadow = true;
+      child.receiveShadow = true;
+      if (child.material) {
+        child.material.side = THREE.FrontSide;
+        child.material.needsUpdate = true;
+      }
+    }
+  });
+
+  const body = makeBossHitbox(new THREE.CapsuleGeometry(0.86, 1.9, 6, 14), [0, 1.55, 0], group);
+  const head = makeBossHitbox(new THREE.SphereGeometry(0.72, 16, 12), [0, 2.95, -0.05], group);
+  const mixer = new THREE.AnimationMixer(root);
+  group.userData.parts = null;
+  group.userData.head = head;
+  group.userData.body = body;
+  group.userData.type = "Boss";
+  group.userData.bossMixer = mixer;
+  group.userData.bossActions = Object.fromEntries(bossAsset.animations.map((clip) => [clip.name, mixer.clipAction(clip)]));
+  playBossAction(group, "victory", { loop: true, fade: 0 });
+  return group;
+}
+
 function zombieMesh(typeKey = "walker") {
+  if (typeKey === "boss" && bossAsset.loaded) return spongeBossMesh();
   const type = zombieTypes[typeKey] || zombieTypes.walker;
   const group = new THREE.Group();
   group.scale.set(...type.bodyScale);
@@ -1436,6 +1533,7 @@ function damageZombie(zombie, amount, headshot) {
 function killZombie(zombie) {
   zombie.userData.dead = true;
   zombie.userData.state = "Dead";
+  if (zombie.userData.bossMixer) zombie.userData.bossMixer.stopAllAction();
   player.kills += 1;
   player.streak += 1;
   player.coins += 24 + wave * 3;
@@ -1751,10 +1849,24 @@ function resolveZombiePosition(zombie, move, dt) {
   return resolved;
 }
 
+function playerInBossAttackArc(zombie, toPlayerDir) {
+  const forward = new THREE.Vector3(0, 0, -1).applyAxisAngle(new THREE.Vector3(0, 1, 0), zombie.rotation.y).normalize();
+  return forward.dot(toPlayerDir) > Math.cos(THREE.MathUtils.degToRad(72));
+}
+
+function bossMeleeAttack(zombie, toPlayerDir, distance, visiblePlayer) {
+  const data = zombie.userData;
+  const animation = bossAttackAnimations[Math.floor(Math.random() * bossAttackAnimations.length)];
+  playBossAction(zombie, animation, { loop: false, fade: 0.04 });
+  if (!visiblePlayer || distance > 4.6 || !playerInBossAttackArc(zombie, toPlayerDir)) return;
+  takeDamage(data.damage * 1.65, { armorPierce: 0.28 });
+}
+
 function updateZombies(dt) {
   const alive = zombies.filter((z) => !z.userData.dead);
   alive.forEach((zombie) => {
     const data = zombie.userData;
+    if (data.bossMixer) data.bossMixer.update(dt);
     const toPlayer = player.position.clone().sub(zombie.position);
     toPlayer.y = 0;
     const distance = toPlayer.length();
@@ -1764,7 +1876,8 @@ function updateZombies(dt) {
     );
     const toPlayerDir = distance > 0.001 ? toPlayer.clone().normalize() : new THREE.Vector3();
 
-    if (visiblePlayer && distance < 2) data.state = "Attack";
+    const attackRange = data.isBoss ? 4.35 : 2;
+    if (visiblePlayer && distance < attackRange) data.state = "Attack";
     else if (visiblePlayer && distance < 24) data.state = "Chase";
     else if (visiblePlayer && distance < 34) data.state = "Detect";
     else data.state = "Patrol";
@@ -1774,10 +1887,12 @@ function updateZombies(dt) {
     if (data.state === "Chase") move = toPlayerDir.clone();
     if (data.state === "Attack") {
       move.set(0, 0, 0);
+      if (data.isBoss && distance > 0.001) zombie.rotation.y = Math.atan2(-toPlayerDir.x, -toPlayerDir.z);
       data.attackCooldown -= dt;
       if (data.attackCooldown <= 0) {
-        data.attackCooldown = 0.82;
-        takeDamage(data.damage);
+        data.attackCooldown = data.isBoss ? 1.55 : 0.82;
+        if (data.isBoss) bossMeleeAttack(zombie, toPlayerDir, distance, visiblePlayer);
+        else takeDamage(data.damage);
       }
     }
 
@@ -1786,30 +1901,14 @@ function updateZombies(dt) {
     }
 
     if (data.isBoss) {
-      data.shotCooldown -= dt;
-      data.dashCooldown -= dt;
-      data.dashTime = Math.max(0, data.dashTime - dt);
-      if (visiblePlayer && distance > 5 && distance < 28 && data.shotCooldown <= 0) {
-        data.shotCooldown = 1.7;
-        fireBossProjectile(zombie);
-      }
-      if (visiblePlayer && distance > 7 && distance < 22 && data.dashCooldown <= 0 && Math.random() < dt * 0.9) {
-        data.dashCooldown = 5.2 + Math.random() * 2.4;
-        data.dashTime = 0.52;
-        data.dashHit = false;
-        showNotice("Boss 突進");
-      }
-      if (data.dashTime > 0) {
-        move = toPlayerDir.clone().multiplyScalar(4.6);
-        if (!data.dashHit && distance < 2.7) {
-          data.dashHit = true;
-          takeDamage(data.damage * 2.2, { armorPierce: 0.35 });
-        }
-      }
+      data.dashTime = 0;
     }
 
     zombie.position.copy(resolveZombiePosition(zombie, move, dt));
     if (move.lengthSq() > 0.001) zombie.rotation.y = Math.atan2(-move.x, -move.z);
+    if (data.isBoss && data.bossMixer && clock.elapsedTime > (data.bossActionLockedUntil || 0)) {
+      playBossAction(zombie, "victory", { loop: true, fade: move.lengthSq() > 0.001 ? 0.08 : 0.18 });
+    }
     const parts = data.parts;
     if (parts) {
       const stride = Math.sin(clock.elapsedTime * data.speed * 4 + zombie.id);
@@ -1929,7 +2028,7 @@ function updateBossHealthUi() {
   const boss = bossHealthTarget();
   ui.bossHealth.classList.toggle("show", Boolean(boss));
   if (!boss) return;
-  ui.bossName.textContent = `BOSS WAVE ${wave}`;
+  ui.bossName.textContent = bossAsset.loaded ? `SPONGEBOB BOSS WAVE ${wave}` : `BOSS WAVE ${wave}`;
   const ratio = THREE.MathUtils.clamp(boss.userData.health / boss.userData.maxHealth, 0, 1);
   ui.bossHealthFill.style.transform = `scaleX(${ratio})`;
 }
@@ -2091,7 +2190,6 @@ function animate() {
     if (gameMode === "playing" && player.active) {
       updatePlayer(dt);
       updateZombies(dt);
-      updateBossProjectiles(dt);
       updateGrenades(dt);
       if (mouse.shooting && weapons[currentWeapon].automatic) shoot();
     }
@@ -2228,6 +2326,7 @@ buildMap();
 bindEvents();
 loadAk47Model();
 loadAwpModel();
+loadBossModel();
 spawnWave();
 updateHud();
 animate();
