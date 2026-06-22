@@ -7,6 +7,7 @@ const hitmarkerSoundUrl = new URL("../hitmarker_2.mp3", import.meta.url).href;
 const ak47ModelUrl = new URL("./assets/models/ak47.glb", import.meta.url).href;
 const awpModelUrl = new URL("./assets/models/awp.glb", import.meta.url).href;
 const roboSpongebobModelUrl = new URL("./assets/models/robo_spongebob.glb", import.meta.url).href;
+const zombieModelUrl = new URL("./assets/models/zombie.glb", import.meta.url).href;
 const app = document.querySelector("#app");
 
 app.innerHTML = `
@@ -355,6 +356,12 @@ const bossAsset = {
   scene: null,
   animations: [],
 };
+const zombieAsset = {
+  loaded: false,
+  scene: null,
+  animations: [],
+};
+let initialWaveSpawned = false;
 const bossAttackAnimations = ["attack_verti", "attack_horiz_L", "attack_horiz_L"];
 const baseShopPrices = {
   medkit: 75,
@@ -1093,6 +1100,32 @@ function loadBossModel() {
   );
 }
 
+function loadZombieModel() {
+  gltfLoader.load(
+    zombieModelUrl,
+    (gltf) => {
+      zombieAsset.loaded = true;
+      zombieAsset.scene = gltf.scene;
+      zombieAsset.animations = gltf.animations;
+      showNotice("普通殭屍模型載入完成", 1.4);
+      spawnInitialWaveOnce();
+    },
+    undefined,
+    () => {
+      zombieAsset.loaded = false;
+      showNotice("普通殭屍模型載入失敗，使用原本模型", 2);
+      spawnInitialWaveOnce();
+    },
+  );
+}
+
+function spawnInitialWaveOnce() {
+  if (initialWaveSpawned) return;
+  initialWaveSpawned = true;
+  spawnWave();
+  updateHud();
+}
+
 const zombieTypes = {
   walker: {
     label: "Walker",
@@ -1101,6 +1134,10 @@ const zombieTypes = {
     bodyScale: [1, 1, 1],
     skin: "zombie",
     cloth: "tornCloth",
+    moveAnimation: "walk_inplace",
+    modelHeight: 2.15,
+    hitbox: { body: [1.0, 1.55, 0.72], bodyY: 1.02, head: [0.66, 0.48, 0.58], headY: 1.92 },
+    tint: null,
   },
   runner: {
     label: "Runner",
@@ -1109,6 +1146,10 @@ const zombieTypes = {
     bodyScale: [0.76, 1.08, 0.78],
     skin: "runnerSkin",
     cloth: "tornCloth",
+    moveAnimation: "run_inplace",
+    modelHeight: 2.05,
+    hitbox: { body: [0.78, 1.48, 0.62], bodyY: 0.98, head: [0.52, 0.42, 0.5], headY: 1.82 },
+    tint: 0xa3d68f,
   },
   brute: {
     label: "Brute",
@@ -1117,6 +1158,10 @@ const zombieTypes = {
     bodyScale: [1.38, 1.16, 1.28],
     skin: "bruteSkin",
     cloth: "bruteCloth",
+    moveAnimation: "walk1_inplace",
+    modelHeight: 2.55,
+    hitbox: { body: [1.32, 1.86, 0.96], bodyY: 1.18, head: [0.82, 0.58, 0.72], headY: 2.28 },
+    tint: 0x9b5750,
   },
   boss: {
     label: "Boss",
@@ -1170,6 +1215,50 @@ function playBossAction(zombie, namePart, { loop = false, fade = 0.08, timeScale
   data.bossActionLockedUntil = loop ? 0 : clock.elapsedTime + action.getClip().duration / timeScale;
 }
 
+function findActionByNamePart(actions, namePart) {
+  const normalized = namePart.toLowerCase();
+  return Object.entries(actions).find(([name]) => name.toLowerCase() === normalized)?.[1]
+    || Object.entries(actions).find(([name]) => name.toLowerCase().includes(normalized))?.[1]
+    || null;
+}
+
+function playZombieAction(zombie, namePart, { loop = false, fade = 0.08, timeScale = 1 } = {}) {
+  const data = zombie.userData;
+  if (!data.zombieActions) return null;
+  const action = findActionByNamePart(data.zombieActions, namePart);
+  if (!action) return null;
+  if (loop && data.zombieActiveActionName === namePart && data.zombieActiveAction === action) return;
+  if (data.zombieActiveAction && data.zombieActiveAction !== action) data.zombieActiveAction.fadeOut(fade);
+  action.reset();
+  action.enabled = true;
+  action.timeScale = timeScale;
+  action.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, loop ? Infinity : 1);
+  action.clampWhenFinished = !loop;
+  action.fadeIn(fade).play();
+  data.zombieActiveAction = action;
+  data.zombieActiveActionName = namePart;
+  data.zombieActionLockedUntil = loop ? 0 : clock.elapsedTime + action.getClip().duration / timeScale;
+  return action;
+}
+
+function tintZombieModel(root, tint) {
+  if (!tint) return;
+  const tintColor = new THREE.Color(tint);
+  root.traverse((child) => {
+    if (!child.isMesh && !child.isSkinnedMesh) return;
+    if (!child.material) return;
+    const wasArray = Array.isArray(child.material);
+    const materialsToTint = wasArray ? child.material : [child.material];
+    const tintedMaterials = materialsToTint.map((material) => {
+      const clone = material.clone();
+      if (clone.color) clone.color.lerp(tintColor, 0.32);
+      clone.needsUpdate = true;
+      return clone;
+    });
+    child.material = wasArray ? tintedMaterials : tintedMaterials[0];
+  });
+}
+
 function spongeBossMesh() {
   const group = new THREE.Group();
   const visual = new THREE.Group();
@@ -1209,8 +1298,51 @@ function spongeBossMesh() {
   return group;
 }
 
+function zombieGlbMesh(typeKey = "walker") {
+  const type = zombieTypes[typeKey] || zombieTypes.walker;
+  const group = new THREE.Group();
+  const visual = new THREE.Group();
+  const root = cloneSkeleton(zombieAsset.scene);
+  root.updateMatrixWorld(true);
+  const bounds = new THREE.Box3().setFromObject(root);
+  const center = bounds.getCenter(new THREE.Vector3());
+  const size = bounds.getSize(new THREE.Vector3());
+  root.position.set(-center.x, -bounds.min.y, -center.z);
+  const normalizedScale = size.y > 0 ? type.modelHeight / size.y : 1;
+  visual.scale.setScalar(normalizedScale);
+  visual.rotation.y = Math.PI;
+  visual.add(root);
+  group.add(visual);
+
+  root.traverse((child) => {
+    if (child.isMesh || child.isSkinnedMesh) {
+      child.castShadow = true;
+      child.receiveShadow = true;
+      if (child.material) {
+        child.material.side = THREE.FrontSide;
+        child.material.needsUpdate = true;
+      }
+    }
+  });
+  tintZombieModel(root, type.tint);
+
+  const body = makeBossHitbox(new THREE.BoxGeometry(...type.hitbox.body), [0, type.hitbox.bodyY, 0], group);
+  const head = makeBossHitbox(new THREE.BoxGeometry(...type.hitbox.head), [0, type.hitbox.headY, -0.03], group);
+  const mixer = new THREE.AnimationMixer(root);
+  group.userData.parts = null;
+  group.userData.head = head;
+  group.userData.body = body;
+  group.userData.type = type.label;
+  group.userData.zombieMixer = mixer;
+  group.userData.zombieActions = Object.fromEntries(zombieAsset.animations.map((clip) => [clip.name, mixer.clipAction(clip)]));
+  group.userData.moveAnimation = type.moveAnimation;
+  playZombieAction(group, "Idle", { loop: true, fade: 0 });
+  return group;
+}
+
 function zombieMesh(typeKey = "walker") {
   if (typeKey === "boss" && bossAsset.loaded) return spongeBossMesh();
+  if (typeKey !== "boss" && zombieAsset.loaded) return zombieGlbMesh(typeKey);
   const type = zombieTypes[typeKey] || zombieTypes.walker;
   const group = new THREE.Group();
   group.scale.set(...type.bodyScale);
@@ -1535,17 +1667,25 @@ function killZombie(zombie) {
   zombie.userData.dead = true;
   zombie.userData.state = "Dead";
   if (zombie.userData.bossMixer) zombie.userData.bossMixer.stopAllAction();
+  let removeDelay = 900;
+  if (zombie.userData.zombieMixer) {
+    const deathAnimation = Math.random() < 0.5 ? "FallingBack" : "FallingForward";
+    const deathAction = playZombieAction(zombie, deathAnimation, { loop: false, fade: 0.04 });
+    removeDelay = deathAction ? Math.max(900, deathAction.getClip().duration * 1000) : 1200;
+  }
   player.kills += 1;
   player.streak += 1;
   player.coins += 24 + wave * 3;
   player.xp += 35 + wave * 5;
-  zombie.rotation.z = Math.PI * 0.5;
-  zombie.position.y = 0.25;
+  if (!zombie.userData.zombieMixer) {
+    zombie.rotation.z = Math.PI * 0.5;
+    zombie.position.y = 0.25;
+  }
   setTimeout(() => {
     scene.remove(zombie);
     const index = zombies.indexOf(zombie);
     if (index >= 0) zombies.splice(index, 1);
-  }, 900);
+  }, removeDelay);
 
   if (player.streak > 0 && player.streak % 5 === 0) {
     player.coins += 30;
@@ -1774,7 +1914,9 @@ function resetGame() {
   gameMode = "playing";
   ui.shop.classList.remove("open");
   ui.gameOver.classList.remove("show");
+  initialWaveSpawned = false;
   spawnWave();
+  initialWaveSpawned = true;
   switchWeapon(1);
   updateHud();
 }
@@ -1864,10 +2006,16 @@ function bossMeleeAttack(zombie, toPlayerDir, distance, visiblePlayer) {
 }
 
 function updateZombies(dt) {
+  zombies.forEach((zombie) => {
+    if (!zombie.userData.dead) return;
+    if (zombie.userData.zombieMixer) zombie.userData.zombieMixer.update(dt);
+    if (zombie.userData.bossMixer) zombie.userData.bossMixer.update(dt);
+  });
   const alive = zombies.filter((z) => !z.userData.dead);
   alive.forEach((zombie) => {
     const data = zombie.userData;
     if (data.bossMixer) data.bossMixer.update(dt);
+    if (data.zombieMixer) data.zombieMixer.update(dt);
     const toPlayer = player.position.clone().sub(zombie.position);
     toPlayer.y = 0;
     const distance = toPlayer.length();
@@ -1893,7 +2041,10 @@ function updateZombies(dt) {
       if (data.attackCooldown <= 0) {
         data.attackCooldown = data.isBoss ? 1.55 : 0.82;
         if (data.isBoss) bossMeleeAttack(zombie, toPlayerDir, distance, visiblePlayer);
-        else takeDamage(data.damage);
+        else {
+          playZombieAction(zombie, "Attack", { loop: false, fade: 0.04 });
+          takeDamage(data.damage);
+        }
       }
     }
 
@@ -1909,6 +2060,10 @@ function updateZombies(dt) {
     if (move.lengthSq() > 0.001) zombie.rotation.y = Math.atan2(-move.x, -move.z);
     if (data.isBoss && data.bossMixer && clock.elapsedTime > (data.bossActionLockedUntil || 0)) {
       playBossAction(zombie, "victory", { loop: true, fade: move.lengthSq() > 0.001 ? 0.08 : 0.18 });
+    }
+    if (data.zombieMixer && clock.elapsedTime > (data.zombieActionLockedUntil || 0)) {
+      const actionName = move.lengthSq() > 0.001 ? data.moveAnimation : "Idle";
+      playZombieAction(zombie, actionName, { loop: true, fade: 0.1 });
     }
     const parts = data.parts;
     if (parts) {
@@ -2328,6 +2483,6 @@ bindEvents();
 loadAk47Model();
 loadAwpModel();
 loadBossModel();
-spawnWave();
+loadZombieModel();
 updateHud();
 animate();
