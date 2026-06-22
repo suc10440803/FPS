@@ -4,6 +4,7 @@ import "./style.css";
 
 const hitmarkerSoundUrl = new URL("../hitmarker_2.mp3", import.meta.url).href;
 const ak47ModelUrl = new URL("./assets/models/ak47.glb", import.meta.url).href;
+const awpModelUrl = new URL("./assets/models/awp.glb", import.meta.url).href;
 const app = document.querySelector("#app");
 
 app.innerHTML = `
@@ -330,6 +331,15 @@ let hitmarkerBuffer = null;
 let hitmarkerLoading = null;
 const gltfLoader = new GLTFLoader();
 const ak47Asset = {
+  loaded: false,
+  mixer: null,
+  actions: {},
+  activeAction: null,
+  fallback: null,
+  glbRoot: null,
+  restoreTimer: null,
+};
+const awpAsset = {
   loaded: false,
   mixer: null,
   actions: {},
@@ -766,7 +776,7 @@ function createAkModel() {
   weaponCylinder(0.012, 0.22, [0.63, -0.22, -0.68], materials.metal, group, 10);
 
   addWeaponHands(group, [0.12, -0.62, -0.9], [0.5, -0.45, -0.36]);
-  slot.flash = makeMuzzle([0.42, -0.58, -2.25], slot);
+  slot.flash = makeMuzzle([0.5, -0.62, -2.52], slot);
   return slot;
 }
 
@@ -840,8 +850,13 @@ function createM249Model() {
 }
 
 function createAwpModel() {
+  const slot = new THREE.Group();
+  slot.position.set(0, 0, 0);
   const group = new THREE.Group();
   group.position.set(0.18, -0.1, 0);
+  slot.add(group);
+  slot.fallback = group;
+  slot.userData.usesExternalAnimation = false;
   weaponAngledBox([0.38, 0.16, 1.48], [0.34, -0.33, -0.98], [0.02, 0, 0], materials.darkMetal, group);
   weaponBox([0.28, 0.11, 0.52], [0.34, -0.21, -0.92], materials.metal, group);
   weaponBox([0.3, 0.055, 0.34], [0.34, -0.14, -0.62], materials.darkMetal, group);
@@ -866,8 +881,8 @@ function createAwpModel() {
   group.mag = mag;
   group.magBase = mag.position.clone();
   addWeaponHands(group, [0.1, -0.61, -0.76], [0.48, -0.46, -0.28]);
-  group.flash = makeMuzzle([0.36, -0.3, -3.05], group);
-  return group;
+  slot.flash = makeMuzzle([0.6, 0.4, -2.78], slot);
+  return slot;
 }
 
 function createKnifeModel() {
@@ -911,7 +926,7 @@ function configureAk47Glb(root) {
   const size = bounds.getSize(new THREE.Vector3());
   root.position.sub(center);
   const longestSide = Math.max(size.x, size.y, size.z);
-  const targetLength = 2.15;
+  const targetLength = 2.45;
   const normalizedScale = longestSide > 0 ? targetLength / longestSide : 1;
   akVisual.scale.setScalar(normalizedScale);
   root.traverse((child) => {
@@ -972,6 +987,83 @@ function loadAk47Model() {
       akSlot.userData.usesExternalAnimation = false;
       if (akSlot.fallback) akSlot.fallback.visible = true;
       showNotice("AK-47 模型載入失敗，使用原本模型", 2);
+    },
+  );
+}
+
+function configureAwpGlb(root) {
+  const awpVisual = new THREE.Group();
+  awpVisual.name = "AWP_GLB";
+  awpVisual.position.set(0.6, 0.32, -1.2);
+  awpVisual.rotation.set(0, Math.PI, 0);
+  awpVisual.add(root);
+  root.updateMatrixWorld(true);
+  const bounds = new THREE.Box3().setFromObject(root);
+  const center = bounds.getCenter(new THREE.Vector3());
+  const size = bounds.getSize(new THREE.Vector3());
+  root.position.sub(center);
+  const longestSide = Math.max(size.x, size.y, size.z);
+  const targetLength = 2.8;
+  const normalizedScale = longestSide > 0 ? targetLength / longestSide : 1;
+  awpVisual.scale.setScalar(normalizedScale);
+  root.traverse((child) => {
+    if (child.isMesh || child.isSkinnedMesh) {
+      child.castShadow = false;
+      child.receiveShadow = false;
+      if (child.material) {
+        child.material.side = THREE.FrontSide;
+        child.material.needsUpdate = true;
+      }
+    }
+  });
+  return awpVisual;
+}
+
+function findAwpAction(namePart) {
+  return Object.entries(awpAsset.actions).find(([name]) => name.toLowerCase().includes(namePart))?.[1] || null;
+}
+
+function playAwpAction(namePart, { loop = false, fade = 0.06, timeScale = 1 } = {}) {
+  if (!awpAsset.mixer) return;
+  const action = findAwpAction(namePart);
+  if (!action) return;
+  if (awpAsset.activeAction && awpAsset.activeAction !== action) awpAsset.activeAction.fadeOut(fade);
+  action.reset();
+  action.enabled = true;
+  action.timeScale = timeScale;
+  action.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, loop ? Infinity : 1);
+  action.clampWhenFinished = !loop;
+  action.fadeIn(fade).play();
+  awpAsset.activeAction = action;
+  if (!loop && action.getClip().duration > 0) {
+    clearTimeout(awpAsset.restoreTimer);
+    awpAsset.restoreTimer = setTimeout(() => playAwpAction("firstperson_idle", { loop: true, fade: 0.12 }), (action.getClip().duration / timeScale) * 1000);
+  }
+}
+
+function loadAwpModel() {
+  const awpSlot = weaponModel.models[3];
+  awpAsset.fallback = awpSlot.fallback;
+  gltfLoader.load(
+    awpModelUrl,
+    (gltf) => {
+      const root = gltf.scene;
+      const visual = configureAwpGlb(root);
+      awpSlot.add(visual);
+      awpSlot.fallback.visible = false;
+      awpSlot.userData.usesExternalAnimation = true;
+      awpAsset.loaded = true;
+      awpAsset.glbRoot = visual;
+      awpAsset.mixer = new THREE.AnimationMixer(visual);
+      awpAsset.actions = Object.fromEntries(gltf.animations.map((clip) => [clip.name, awpAsset.mixer.clipAction(clip)]));
+      playAwpAction("firstperson_idle", { loop: true, fade: 0 });
+      showNotice("AWP 模型載入完成", 1.4);
+    },
+    undefined,
+    () => {
+      awpSlot.userData.usesExternalAnimation = false;
+      if (awpSlot.fallback) awpSlot.fallback.visible = true;
+      showNotice("AWP 模型載入失敗，使用原本模型", 2);
     },
   );
 }
@@ -1158,6 +1250,7 @@ function switchWeapon(index) {
   });
   weaponModel.flash = weaponModel.models[currentWeapon].flash;
   if (weapons[currentWeapon].name === "AK-47" && ak47Asset.loaded) playAkAction("idle", { loop: true, fade: 0.1 });
+  if (weapons[currentWeapon].name === "AWP" && awpAsset.loaded) playAwpAction("firstperson_idle", { loop: true, fade: 0.1 });
   updateWeaponHud();
 }
 
@@ -1180,6 +1273,7 @@ function reload() {
   reloadingUntil = clock.elapsedTime + weapon.reload;
   playUiSound("reload");
   if (weapon.name === "AK-47" && ak47Asset.loaded) playAkAction("reload", { loop: false, timeScale: 2.667 / weapon.reload });
+  if (weapon.name === "AWP" && awpAsset.loaded) playAwpAction("sh_snip_stand_reload", { loop: false, timeScale: 3.667 / weapon.reload });
   showNotice(`${weapon.name} 裝填中`, weapon.reload);
 }
 
@@ -1273,6 +1367,7 @@ function shoot() {
   player.pitch = Math.min(1.35, player.pitch + weapon.recoil);
   playWeaponSound(weapon.name);
   if (weapon.name === "AK-47" && ak47Asset.loaded) playAkAction("shooting", { loop: false, fade: 0.02 });
+  if (weapon.name === "AWP" && awpAsset.loaded) playAwpAction("sh_snip_firing_additive", { loop: false, fade: 0.02, timeScale: 1.458 / weapon.fireRate });
   if (weaponModel.flash) weaponModel.flash.visible = true;
   if (weapon.name === "Knife") weaponModel.swing = 0.22;
   setTimeout(() => {
@@ -1532,6 +1627,8 @@ function endGame() {
 function resetGame() {
   clearTimeout(ak47Asset.restoreTimer);
   if (ak47Asset.loaded) playAkAction("idle", { loop: true, fade: 0 });
+  clearTimeout(awpAsset.restoreTimer);
+  if (awpAsset.loaded) playAwpAction("firstperson_idle", { loop: true, fade: 0 });
   zombies.splice(0).forEach((zombie) => scene.remove(zombie));
   grenades.splice(0).forEach((grenade) => scene.remove(grenade.mesh));
   explosions.splice(0).forEach((explosion) => scene.remove(explosion.mesh));
@@ -2001,6 +2098,7 @@ function animate() {
   }
   updateBullets(dt);
   if (ak47Asset.mixer) ak47Asset.mixer.update(dt);
+  if (awpAsset.mixer) awpAsset.mixer.update(dt);
   updateBossHealthUi();
   updateReloadVisuals();
   updateScope(dt);
@@ -2129,6 +2227,7 @@ addLights();
 buildMap();
 bindEvents();
 loadAk47Model();
+loadAwpModel();
 spawnWave();
 updateHud();
 animate();

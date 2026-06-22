@@ -58,3 +58,4 @@ http://127.0.0.1:5173
 ## 第三方模型署名
 
 - `src/assets/models/ak47.glb`: `Ak47` by wburton, licensed under CC-BY-4.0. Source: https://sketchfab.com/3d-models/ak47-831519a097d84e079fd8bc4b15e5b57d
+- `src/assets/models/awp.glb`: `RIFLE | AWP Weapon Model (CS2)` by 6lucius, licensed under CC-BY-4.0. Source: https://sketchfab.com/3d-models/rifle-awp-weapon-model-cs2-23ad3d7fb46b40e59cab7937654e2691
