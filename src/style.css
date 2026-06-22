@@ -34,6 +34,7 @@ canvas {
 .bottombar,
 .sidepanel,
 .notice,
+.dev-console,
 .start-screen,
 .shop {
   position: absolute;
@@ -364,6 +365,55 @@ canvas {
   color: #fff7d1;
   font-weight: 800;
   font-size: 22px;
+}
+
+.dev-console {
+  left: 50%;
+  bottom: 108px;
+  width: min(520px, calc(100vw - 28px));
+  display: none;
+  grid-template-columns: auto 1fr;
+  gap: 8px 10px;
+  align-items: center;
+  transform: translateX(-50%);
+  border: 1px solid rgb(241 207 106 / 46%);
+  border-radius: 7px;
+  padding: 10px;
+  background: rgb(7 9 9 / 88%);
+  pointer-events: auto;
+  z-index: 30;
+}
+
+.dev-console.open {
+  display: grid;
+}
+
+.dev-console label {
+  color: #f1cf6a;
+  font-size: 12px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.dev-console input {
+  min-width: 0;
+  border: 1px solid rgb(255 255 255 / 18%);
+  border-radius: 6px;
+  padding: 9px 10px;
+  outline: none;
+  background: rgb(255 255 255 / 9%);
+  color: #fff7d1;
+  font: inherit;
+}
+
+.dev-console input:focus {
+  border-color: #f1cf6a;
+}
+
+.dev-console small {
+  grid-column: 1 / -1;
+  color: #d7d2c2;
+  font-size: 12px;
 }
 
 .start-screen {

@@ -54,3 +54,7 @@ http://127.0.0.1:5173
 - Walker、Runner、Brute 三種殭屍體型與速度/血量差異
 
 多人連線、Socket.io、MongoDB、排行榜與同步造型屬於後續階段，這個版本先把單機核心玩法做成可直接測試的基礎。
+
+## 第三方模型署名
+
+- `src/assets/models/ak47.glb`: `Ak47` by wburton, licensed under CC-BY-4.0. Source: https://sketchfab.com/3d-models/ak47-831519a097d84e079fd8bc4b15e5b57d

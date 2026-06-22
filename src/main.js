@@ -1,7 +1,9 @@
 import * as THREE from "three";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import "./style.css";
 
 const hitmarkerSoundUrl = new URL("../hitmarker_2.mp3", import.meta.url).href;
+const ak47ModelUrl = new URL("./assets/models/ak47.glb", import.meta.url).href;
 const app = document.querySelector("#app");
 
 app.innerHTML = `
@@ -31,6 +33,11 @@ app.innerHTML = `
       </div>
     </div>
     <div class="notice" id="notice"></div>
+    <form class="dev-console" id="devConsole">
+      <label for="consoleInput">Console</label>
+      <input id="consoleInput" autocomplete="off" spellcheck="false" placeholder="kill / money" />
+      <small id="consoleOutput">按 Enter 執行，按波浪鍵關閉。</small>
+    </form>
     <div class="crosshair"></div>
     <svg class="reload-ring" id="reloadRing" viewBox="0 0 100 100" aria-hidden="true">
       <circle class="reload-ring-bg" cx="50" cy="50" r="42"></circle>
@@ -142,6 +149,9 @@ const ui = {
   reloadProgress: document.querySelector("#reloadProgress"),
   scopeOverlay: document.querySelector("#scopeOverlay"),
   notice: document.querySelector("#notice"),
+  devConsole: document.querySelector("#devConsole"),
+  consoleInput: document.querySelector("#consoleInput"),
+  consoleOutput: document.querySelector("#consoleOutput"),
   hitmarker: document.querySelector("#hitmarker"),
   damage: document.querySelector("#damage"),
   shop: document.querySelector("#shop"),
@@ -307,6 +317,7 @@ let gameMode = "start";
 let scoped = false;
 let scopeAmount = 0;
 let sprintUntil = 0;
+let consolePreviousMode = "start";
 const lastMoveTap = { KeyW: -Infinity, KeyS: -Infinity };
 const zombies = [];
 const colliders = [];
@@ -317,6 +328,16 @@ const bossProjectiles = [];
 let audioContext;
 let hitmarkerBuffer = null;
 let hitmarkerLoading = null;
+const gltfLoader = new GLTFLoader();
+const ak47Asset = {
+  loaded: false,
+  mixer: null,
+  actions: {},
+  activeAction: null,
+  fallback: null,
+  glbRoot: null,
+  restoreTimer: null,
+};
 const baseShopPrices = {
   medkit: 75,
   armor: 90,
@@ -690,8 +711,13 @@ function addWeaponHands(group, leftPosition = [0.08, -0.58, -0.88], rightPositio
 }
 
 function createAkModel() {
+  const slot = new THREE.Group();
+  slot.position.set(0, 0, 0);
   const group = new THREE.Group();
   group.position.set(0.2, -0.1, 0);
+  slot.add(group);
+  slot.fallback = group;
+  slot.userData.usesExternalAnimation = false;
 
   weaponAngledBox([0.52, 0.18, 0.66], [0.31, -0.33, -0.78], [0, 0, 0.01], materials.darkMetal, group);
   weaponAngledBox([0.48, 0.12, 0.5], [0.29, -0.19, -0.72], [-0.08, 0, 0], materials.metal, group);
@@ -740,8 +766,8 @@ function createAkModel() {
   weaponCylinder(0.012, 0.22, [0.63, -0.22, -0.68], materials.metal, group, 10);
 
   addWeaponHands(group, [0.12, -0.62, -0.9], [0.5, -0.45, -0.36]);
-  group.flash = makeMuzzle([0.36, -0.31, -2.02], group);
-  return group;
+  slot.flash = makeMuzzle([0.56, -0.41, -2.02], slot);
+  return slot;
 }
 
 function createPistolModel() {
@@ -872,6 +898,72 @@ const weaponModel = createWeaponModel();
 weaponModel.models.forEach((model, index) => {
   model.visible = index === currentWeapon;
 });
+
+function configureAk47Glb(root) {
+  root.name = "AK47_GLB";
+  root.position.set(0.44, -0.42, -1.12);
+  root.rotation.set(0, -Math.PI * 0.5, 0);
+  root.scale.setScalar(0.22);
+  root.traverse((child) => {
+    if (child.isMesh || child.isSkinnedMesh) {
+      child.castShadow = true;
+      child.receiveShadow = true;
+      if (child.material) {
+        child.material.side = THREE.FrontSide;
+        child.material.needsUpdate = true;
+      }
+    }
+  });
+}
+
+function findAkAction(namePart) {
+  return Object.entries(ak47Asset.actions).find(([name]) => name.toLowerCase().includes(namePart))?.[1] || null;
+}
+
+function playAkAction(namePart, { loop = false, fade = 0.06, timeScale = 1 } = {}) {
+  if (!ak47Asset.mixer) return;
+  const action = findAkAction(namePart);
+  if (!action) return;
+  if (ak47Asset.activeAction && ak47Asset.activeAction !== action) ak47Asset.activeAction.fadeOut(fade);
+  action.reset();
+  action.enabled = true;
+  action.timeScale = timeScale;
+  action.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, loop ? Infinity : 1);
+  action.clampWhenFinished = !loop;
+  action.fadeIn(fade).play();
+  ak47Asset.activeAction = action;
+  if (!loop) {
+    clearTimeout(ak47Asset.restoreTimer);
+    ak47Asset.restoreTimer = setTimeout(() => playAkAction("idle", { loop: true, fade: 0.12 }), (action.getClip().duration / timeScale) * 1000);
+  }
+}
+
+function loadAk47Model() {
+  const akSlot = weaponModel.models[2];
+  ak47Asset.fallback = akSlot.fallback;
+  gltfLoader.load(
+    ak47ModelUrl,
+    (gltf) => {
+      const root = gltf.scene;
+      configureAk47Glb(root);
+      akSlot.add(root);
+      akSlot.fallback.visible = false;
+      akSlot.userData.usesExternalAnimation = true;
+      ak47Asset.loaded = true;
+      ak47Asset.glbRoot = root;
+      ak47Asset.mixer = new THREE.AnimationMixer(root);
+      ak47Asset.actions = Object.fromEntries(gltf.animations.map((clip) => [clip.name, ak47Asset.mixer.clipAction(clip)]));
+      playAkAction("idle", { loop: true, fade: 0 });
+      showNotice("AK-47 模型載入完成", 1.4);
+    },
+    undefined,
+    () => {
+      akSlot.userData.usesExternalAnimation = false;
+      if (akSlot.fallback) akSlot.fallback.visible = true;
+      showNotice("AK-47 模型載入失敗，使用原本模型", 2);
+    },
+  );
+}
 
 const zombieTypes = {
   walker: {
@@ -1054,6 +1146,7 @@ function switchWeapon(index) {
     model.visible = modelIndex === currentWeapon;
   });
   weaponModel.flash = weaponModel.models[currentWeapon].flash;
+  if (weapons[currentWeapon].name === "AK-47" && ak47Asset.loaded) playAkAction("idle", { loop: true, fade: 0.1 });
   updateWeaponHud();
 }
 
@@ -1075,6 +1168,7 @@ function reload() {
   reloadStartedAt = clock.elapsedTime;
   reloadingUntil = clock.elapsedTime + weapon.reload;
   playUiSound("reload");
+  if (weapon.name === "AK-47" && ak47Asset.loaded) playAkAction("reload", { loop: false, timeScale: 2.667 / weapon.reload });
   showNotice(`${weapon.name} 裝填中`, weapon.reload);
 }
 
@@ -1106,6 +1200,7 @@ function updateReloadVisuals() {
   ui.reloadProgress.style.strokeDashoffset = `${isCompleteGlow ? 0 : 264 - progress * 264}`;
 
   weaponModel.models.forEach((model) => {
+    if (model.userData.usesExternalAnimation) return;
     if (model.mag && model.magBase) model.mag.position.copy(model.magBase);
     if (model.leftHand && model.leftHandBase) model.leftHand.position.copy(model.leftHandBase);
     if (model.rightHand && model.rightHandBase) model.rightHand.position.copy(model.rightHandBase);
@@ -1116,6 +1211,7 @@ function updateReloadVisuals() {
 
   if (!progress) return;
   const model = weaponModel.models[currentWeapon];
+  if (model.userData.usesExternalAnimation) return;
   const reach = Math.sin(progress * Math.PI);
   const pull = progress < 0.5 ? progress * 2 : (1 - progress) * 2;
   model.rotation.x = -0.18 * reach;
@@ -1165,6 +1261,7 @@ function shoot() {
   if (Number.isFinite(weapon.mag)) weapon.mag -= 1;
   player.pitch = Math.min(1.35, player.pitch + weapon.recoil);
   playWeaponSound(weapon.name);
+  if (weapon.name === "AK-47" && ak47Asset.loaded) playAkAction("shooting", { loop: false, fade: 0.02 });
   if (weaponModel.flash) weaponModel.flash.visible = true;
   if (weapon.name === "Knife") weaponModel.swing = 0.22;
   setTimeout(() => {
@@ -1422,6 +1519,8 @@ function endGame() {
 }
 
 function resetGame() {
+  clearTimeout(ak47Asset.restoreTimer);
+  if (ak47Asset.loaded) playAkAction("idle", { loop: true, fade: 0 });
   zombies.splice(0).forEach((zombie) => scene.remove(zombie));
   grenades.splice(0).forEach((grenade) => scene.remove(grenade.mesh));
   explosions.splice(0).forEach((explosion) => scene.remove(explosion.mesh));
@@ -1830,6 +1929,53 @@ function toggleShop() {
   else if (gameMode === "paused-shop") closeShop();
 }
 
+function openDevConsole() {
+  if (player.dead) return;
+  consolePreviousMode = gameMode === "paused-console" ? consolePreviousMode : gameMode;
+  gameMode = "paused-console";
+  player.active = false;
+  mouse.shooting = false;
+  document.exitPointerLock?.();
+  ui.devConsole.classList.add("open");
+  ui.consoleInput.focus();
+}
+
+function closeDevConsole() {
+  if (gameMode !== "paused-console") return;
+  ui.devConsole.classList.remove("open");
+  ui.consoleInput.blur();
+  const shouldResume = consolePreviousMode === "playing";
+  gameMode = shouldResume ? "playing" : consolePreviousMode;
+  player.active = shouldResume;
+  if (shouldResume) requestGamePointerLock();
+}
+
+function toggleDevConsole() {
+  if (gameMode === "paused-console") closeDevConsole();
+  else openDevConsole();
+}
+
+function executeConsoleCommand(command) {
+  const normalized = command.trim().toLowerCase();
+  if (!normalized) return;
+  if (normalized === "kill") {
+    zombies.filter((zombie) => !zombie.userData.dead).forEach((zombie) => killZombie(zombie));
+    ui.consoleOutput.textContent = "所有殭屍已清除。";
+    showNotice("Console: kill");
+    updateHud();
+    return;
+  }
+  if (normalized === "money") {
+    player.coins += 10000;
+    ui.consoleOutput.textContent = "金幣 +10000。";
+    showNotice("Console: money +10000");
+    updateHud();
+    return;
+  }
+  ui.consoleOutput.textContent = `未知指令：${command}`;
+  playUiSound("fail");
+}
+
 function animate() {
   const dt = Math.min(clock.getDelta(), 0.033);
   if (gameMode === "playing") finishReloadIfNeeded();
@@ -1843,6 +1989,7 @@ function animate() {
     }
   }
   updateBullets(dt);
+  if (ak47Asset.mixer) ak47Asset.mixer.update(dt);
   updateBossHealthUi();
   updateReloadVisuals();
   updateScope(dt);
@@ -1877,12 +2024,12 @@ function bindEvents() {
   ui.continueButton.addEventListener("click", closeShop);
   document.addEventListener("pointerlockchange", () => {
     mouse.locked = document.pointerLockElement === renderer.domElement;
-    if (!mouse.locked && !player.dead && gameMode !== "paused-shop") {
+    if (!mouse.locked && !player.dead && gameMode !== "paused-shop" && gameMode !== "paused-console") {
       gameMode = "start";
       player.active = false;
       ui.startScreen.style.display = "grid";
     }
-    if (mouse.locked && !player.dead && gameMode !== "paused-shop") {
+    if (mouse.locked && !player.dead && gameMode !== "paused-shop" && gameMode !== "paused-console") {
       gameMode = "playing";
       player.active = true;
       ui.startScreen.style.display = "none";
@@ -1909,6 +2056,18 @@ function bindEvents() {
   });
   document.addEventListener("contextmenu", (event) => event.preventDefault());
   document.addEventListener("keydown", (event) => {
+    if (event.code === "Backquote") {
+      event.preventDefault();
+      toggleDevConsole();
+      return;
+    }
+    if (gameMode === "paused-console") {
+      if (event.code === "Escape") {
+        event.preventDefault();
+        closeDevConsole();
+      }
+      return;
+    }
     if (event.code === "KeyB") {
       event.preventDefault();
       toggleShop();
@@ -1943,6 +2102,11 @@ function bindEvents() {
     const button = event.target.closest("button[data-buy]");
     if (button) buy(button.dataset.buy);
   });
+  ui.devConsole.addEventListener("submit", (event) => {
+    event.preventDefault();
+    executeConsoleCommand(ui.consoleInput.value);
+    ui.consoleInput.value = "";
+  });
   window.addEventListener("resize", () => {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
@@ -1953,6 +2117,7 @@ function bindEvents() {
 addLights();
 buildMap();
 bindEvents();
+loadAk47Model();
 spawnWave();
 updateHud();
 animate();
