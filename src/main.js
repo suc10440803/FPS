@@ -1181,6 +1181,7 @@ function spongeBossMesh() {
   root.position.set(-center.x, -bounds.min.y, -center.z);
   const normalizedScale = size.y > 0 ? 3.25 / size.y : 1;
   visual.scale.setScalar(normalizedScale);
+  visual.rotation.y = Math.PI;
   visual.add(root);
   group.add(visual);
 
